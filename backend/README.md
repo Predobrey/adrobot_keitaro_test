@@ -1,83 +1,163 @@
-# Adrobot — Keitaro Campaign Manager
+# Backend Adrobot — FastAPI / SQLAlchemy / Keitaro Admin API
 
-Small FastAPI + SQLAlchemy application for the ETOLEGKO test assignment.
+Серверная часть тестового приложения. Обслуживает REST API для Next.js, обращается к Keitaro Admin API с секретным ключом и хранит только локальные метаданные и историю действий в SQLite.
 
-## Features
+**Полное руководство по установке обоих сервисов:** [корневой README](../README.md). Ниже — детали backend, миграций и API-контрактов.
 
-- **Create campaigns:** name, one or multiple ISO-2 GEO codes, existing offer, existing parked domain, campaign group, traffic source. Creates a disabled campaign, then two flows: `forced` country-filtered HTTP redirect to Google and `default` stream with an offer. Enables the campaign only after both flows are created.
-- **Edit offer streams:** list campaigns, select stream, add/remove/restore offers before saving; rebalance whole-number shares; pin an offer share; Cancel or Push to KT. Active offers and any pre-existing disabled offers are sent when saving; disabled entries stay disabled unless explicitly restored. The UI rereads Keitaro after a save.
-- **Persistence:** Keitaro receives the selected `domain_id` on campaign creation. SQLAlchemy stores a local copy of the domain association for campaign URLs and an operation log. Keitaro remains the source of truth for campaign/stream/offer data.
-- **Safety:** API key is server-side. No writes on page load. Campaign creation starts disabled to avoid serving incomplete routing. If creation fails midway, a disabled campaign may remain in Keitaro and should be inspected manually.
+## Запуск с чистого окружения
 
-## Requirements
-
-- Python 3.12+ (3.11 is also expected to work)
-- Keitaro Admin API access; a pre-existing active domain, group, traffic source and offer.
-- This app is intended for **local use**, not public deployment without authentication and TLS.
-
-## Setup (Windows PowerShell)
+Требуется Python **3.12**. В корне репозитория на Windows (PowerShell):
 
 ```powershell
-# From the repository root:
 py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r .\backend\requirements.txt
+Copy-Item .\backend\.env.example .\backend\.env
+notepad .\backend\.env
 cd backend
-Copy-Item .env.example .env
-# Edit .env: enter the tracker base URL and API key; never commit .env.
-alembic upgrade head
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+python -m alembic upgrade head
+python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Open the Next.js UI at <http://localhost:3000> (start it separately per root README). FastAPI Swagger docs: <http://127.0.0.1:8000/docs>.
+Если `.env` уже есть, **пропустите `Copy-Item`**, чтобы не затереть свои настройки. На Linux/macOS вместо PowerShell-активации используйте `source .venv/bin/activate`, а конфигурацию копируйте командой `cp backend/.env.example backend/.env` **до** перехода в `backend/`.
 
-Linux/macOS (from repository root): `python3 -m venv .venv; source .venv/bin/activate; pip install -r backend/requirements.txt; cd backend; cp .env.example .env; alembic upgrade head; uvicorn app.main:app --reload`.
+Работающий Swagger UI: <http://127.0.0.1:8000/docs>. Запускать `alembic`, `pytest` и `uvicorn` следует из директории `backend/`: настройки и относительный путь SQLite рассчитаны на неё.
 
-## Environment
+## Конфигурация
 
-| Variable | Description |
+`backend/.env` создаётся из `.env.example`:
+
+```dotenv
+KEITARO_BASE_URL=https://tracker.example.com
+KEITARO_API_KEY=CHANGE_ME
+DATABASE_URL=sqlite:///./adrobot.db
+GOOGLE_REDIRECT_URL=https://www.google.com/
+```
+
+- `KEITARO_BASE_URL` — **корень** Keitaro, без `/admin`, `/admin_api/v1` и конечного `/` (клиент сам добавляет `/admin_api/v1/`). Для удалённого сервера обязателен HTTPS; HTTP допускается для `localhost` / `127.0.0.1`.
+- `KEITARO_API_KEY` — секретный ключ Admin API; передаётся в заголовке `Api-Key` с backend, не из браузера.
+- `DATABASE_URL` — URL SQLAlchemy. При значении по умолчанию файл находится по пути `backend/adrobot.db` при запуске из `backend/`.
+- `GOOGLE_REDIRECT_URL` — целевой URL первого потока кампании.
+
+Не добавляйте реальные ключи и пароли в Git/README. При изменении `.env` перезапустите Uvicorn. `GET /api/health` сообщает о заполненности конфигурации, **не проверяет** авторизацию в Keitaro.
+
+## Слои приложения
+
+| Файл | Ответственность |
 | --- | --- |
-| `KEITARO_BASE_URL` | Tracker origin, e.g. `https://tracker.example` (without `/admin_api/v1`) |
-| `KEITARO_API_KEY` | Keitaro Admin API key (only in `.env`) |
-| `DATABASE_URL` | Local SQLite by default; SQLAlchemy URL |
-| `GOOGLE_REDIRECT_URL` | Redirect destination, defaults to `https://www.google.com/` |
+| `app/main.py` | Маршруты FastAPI и HTTP-обработка ошибок |
+| `app/config.py` | Чтение `.env`, настройки Pydantic |
+| `app/keitaro.py` | HTTPX-клиент Keitaro, заголовок `Api-Key`, ошибки и таймауты |
+| `app/schemas.py` | Pydantic-валидация входящих данных |
+| `app/service.py` | Создание кампаний и обновление офферов, проверка после записи |
+| `app/db.py`, `app/models.py` | SQLAlchemy engine/session, две локальные таблицы |
+| `alembic/versions/` | Миграции SQLite/SQLAlchemy |
+| `tests/` | Тесты схем, API-клиента и сервисной логики |
 
-Keitaro calls use header `Api-Key`. Outside localhost, the application requires an HTTPS tracker URL.
+### Миграции
 
-## Test
+Из `backend/`:
 
 ```powershell
-pytest -q
+python -m alembic upgrade head
+python -m alembic current
+python -m alembic history
 ```
 
-Tests use mocked Keitaro responses; a live tracker isn't required. `test_editor_contract.py` checks the offer-only PUT payload, invalid percentages, refused API writes, read-back verification and preservation of filters and routing configuration. The frontend also tests pure offer-editor operations without a browser.
+Начальная миграция — `0001_initial`. Создаются таблицы:
 
-The shared Keitaro test account currently exposes just one offer and returns 403 when creating offers. Multiple-offer save behavior is therefore mock-verified rather than live-verified; do not remove or alter the shared catalog offer.
+- `campaign_domains`: ID кампании, `domain_id`, доменное имя и дата локальной привязки.
+- `operation_log`: операция, IDs кампании/потока, итог (`success`, `partial` или `verify`) и технические детали.
 
-## Validation errors and first live test
+Сама Keitaro **не использует эту SQLite**: кампании, потоки, офферы и фильтры находятся в Keitaro и читаются из него. Удаление `.db` не удаляет их с внешнего сервера, а `downgrade` удаляет локальные таблицы — для обычного запуска это не нужно.
 
-Keitaro requires a non-empty campaign `alias`. Adrobot generates a URL-safe alias
-from the supplied campaign name with a short random suffix to avoid collisions.
-On an upstream validation failure, the UI shows the HTTP status and failed Admin API
-operation, plus any structured validation details returned by Keitaro.
-If a failure occurs after a campaign was created, inspect its ID in Keitaro before
-trying again; the partially created campaign may already exist.
+## Контракты API
 
-## Design notes / boundaries
+| Метод | Маршрут | Назначение |
+| --- | --- | --- |
+| `GET` | `/api/health` | Состояние приложения и флаг заполненных настроек |
+| `GET` | `/api/meta` | Списки офферов, доменов, групп и источников Keitaro |
+| `GET` | `/api/campaigns` | Список кампаний |
+| `POST` | `/api/campaigns` | Создать кампанию и два потока |
+| `GET` | `/api/campaigns/{campaign_id}/streams` | Список потоков кампании |
+| `GET` | `/api/streams/{stream_id}` | Текущая конфигурация потока |
+| `PUT` | `/api/streams/{stream_id}/offers` | Состав и доли офферов конкретного потока |
 
-- Domain is selected from **existing parked domains** via `GET /domains` and assigned to the created campaign using `domain_id` in `POST /campaigns`. This does not change a domain's default campaign or global parking settings.
-- Geo filter uses the Keitaro `country` filter, `accept` mode and an array of ISO-2 codes. Flow priority is set by `forced` and `default` types with position rotation.
-- First flow uses `schema=redirect`, `action_type=http`, `action_payload=https://www.google.com/` (HTTP redirect).
-- Second flow uses `schema=landings` with empty landings and one 100% offer; existing offers are updated with partial `PUT /streams/{id}` containing only the `offers` array, leaving unrelated stream fields untouched.
-- Offer shares are percentages, not normalized float probabilities. For unlocked offers remaining integer percentage points are spread evenly and remainder assigned from top to bottom (e.g., 34/33/33). Pinned shares are left unchanged.
-- The UI doesn't implement editing filters, domains, campaign source, monitoring, roles, account management or analytics. Those are outside assignment scope.
-- If a live Keitaro API version uses a different redirect / country-filter payload, inspect one corresponding request in Keitaro **Network → Fetch/XHR → Payload** and adjust the mapping in `app/service.py`. No live access was available during initial implementation.
+Пример JSON для `POST /api/campaigns` (ID должны существовать **в вашем** Keitaro):
 
-## API routes
+```json
+{
+  "name": "test_example_campaign1",
+  "geos": ["AU"],
+  "offer_id": 1,
+  "domain_id": 2,
+  "group_id": 3,
+  "traffic_source_id": 4
+}
+```
 
-`GET /api/health`, `GET /api/meta`, `GET /api/campaigns`, `POST /api/campaigns`, `GET /api/campaigns/{id}/streams`, `GET /api/streams/{id}`, `PUT /api/streams/{id}/offers`.
+Пример `PUT /api/streams/{stream_id}/offers`:
 
-## Official docs
+```json
+{
+  "offers": [
+    {"offer_id": 1, "share": 50, "state": "active"},
+    {"offer_id": 2, "share": 50, "state": "active"}
+  ]
+}
+```
 
-- <https://docs.keitaro.io/en/development/admin-api.html>
-- <https://admin-api.docs.keitaro.io/>
+Оба примера демонстрируют **структуру**, а не готовые ID для чужого трекера. Swagger показывает актуальные схемы и позволяет протестировать операции; `POST` и `PUT` — **реальные записи**, используйте их только для разрешённых тестовых данных.
+
+### Создание кампании: последовательность
+
+1. До первой записи проверяются существование и доступность выбранных оффера/домена, группы и источника через Keitaro API.
+2. `POST /campaigns`: имя, уникальный непустой `alias`, `domain_id`, `group_id`, `traffic_source_id`, `type=position`, `state=disabled`, CPC (0).
+3. `POST /streams`: `forced`, фильтр `country/accept` по ISO-2 GEO, HTTP-редирект на `GOOGLE_REDIRECT_URL`.
+4. `POST /streams`: `default`, `schema=landings`, один активный оффер с долей 100%.
+5. Включение кампании и повторное чтение: проверяется наличие **именно двух созданных потоков** по их ID; локально записываются домен и журнал операции.
+
+Если после создания кампании возникает ошибка создания потока или проверки, в Keitaro **может остаться частичная конфигурация**. Сервис сообщает ID кампании, если он известен. Не нажимайте «создать» повторно без проверки созданной записи.
+
+### Обновление офферов: ограничения
+
+- Допустимы только потоки `schema=landings`.
+- ID офферов должны существовать и быть активными в каталоге Keitaro.
+- Офферы в запросе не должны повторяться; должен оставаться хотя бы один активный; сумма долей активных — строго **100%**, у отключённых — **0%**.
+- Backend сохраняет уже отключённые офферы потока как отключённые, если их не восстановили явно.
+- В Keitaro отправляется частичный `PUT /streams/{id}` **только с массивом `offers`** — фильтры, тип, порядок, схема, редирект и другие настройки потока не запрашиваются к изменению.
+- После ответа трекера поток читается повторно: проверяются офферы/проценты и неизменность доступных полей маршрутизации. При расхождении возвращается ошибка проверки, а не ложное подтверждение успеха.
+
+### Обработка ошибок
+
+- Ошибки соединения, редиректы Admin API, HTTP-ошибки и не-JSON ответы преобразуются в управляемые ошибки FastAPI.
+- Для отказов Keitaro возвращается описание операции и доступная информация валидации, без вывода ключа или HTML-страницы.
+- `403` может означать отсутствие прав на конкретное действие; `422` — ошибку входных данных / валидации. Оба случая не означают, что другие методы этого ключа недоступны.
+- Ошибка после частичной записи **не откатывает** удалённые объекты Keitaro; требуется ручная проверка их фактического состояния.
+
+## Автоматические тесты
+
+Из `backend/` с активированной `.venv`:
+
+```powershell
+python -m pytest -q
+```
+
+В V8 проверялось **48 backend-тестов**, включая:
+
+- `tests/test_schemas.py` — Pydantic-валидация GEO, долей, дубликатов, активности.
+- `tests/test_keitaro.py` — HTTPX-клиент и обработка ответов/ошибок.
+- `tests/test_service.py` — конфигурация кампании и обработка частичной ошибки.
+- `tests/test_editor_contract.py` — сохранение состава офферов, read-back, неактивные офферы, защита от изменения маршрутизации.
+
+Проверки подменяют ответы Keitaro и не выполняют записи в чужой трекер. Frontend-тесты запускаются отдельно из `frontend/` (`npm test`); см. корневой README.
+
+**Ограничение общей тестовой среды:** в доступном Keitaro на момент проверки был только один оффер; создание новых через API завершалось `403 Forbidden`. Поэтому многократное добавление и изменение долей разных офферов проверено на моках, но не подтверждено реальной записью нескольких офферов в Keitaro.
+
+## Безопасность и рамки задачи
+
+- Приложение рассчитано на локальный запуск, **без собственной аутентификации пользователей**. Не публикуйте FastAPI/Next.js в открытый интернет без отдельной защиты.
+- Ключ Keitaro хранится **только** в `backend/.env`. Файлы `.env`, `.venv`, `node_modules`, `.next`, локальная БД должны оставаться вне Git.
+- Не входит в задачу: создание/удаление офферов каталога, изменение фильтров потоков через UI, отчёты по рекламе, роли/аккаунты пользователей.
+
+Официальная документация: [Keitaro Admin API](https://admin-api.docs.keitaro.io/), [документация Keitaro](https://docs.keitaro.io/ru/).
