@@ -141,7 +141,12 @@ export default function Dashboard() {
       const result = await api<CreatedCampaign>("/campaigns", { method: "POST", body: JSON.stringify(payload) });
       setCreated(result);
       setNotice({ kind: "success", message: `Кампания №${result.id} создана в Keitaro. Потоков: ${result.streams.length}.` });
-      await refreshCampaigns();
+      try {
+        await refreshCampaigns();
+      } catch {
+        // The campaign was already created: a list-refresh failure is not a failed write.
+        setNotice({ kind: "info", message: `Кампания №${result.id} создана в Keitaro, но не удалось обновить список кампаний. Обновите страницу позже.` });
+      }
     } catch (error) {
       setNotice({ kind: "error", message: getMessage(error) });
     } finally {

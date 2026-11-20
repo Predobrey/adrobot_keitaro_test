@@ -5,7 +5,7 @@ Small FastAPI + SQLAlchemy application for the ETOLEGKO test assignment.
 ## Features
 
 - **Create campaigns:** name, one or multiple ISO-2 GEO codes, existing offer, existing parked domain, campaign group, traffic source. Creates a disabled campaign, then two flows: `forced` country-filtered HTTP redirect to Google and `default` stream with an offer. Enables the campaign only after both flows are created.
-- **Edit offer streams:** list campaigns, select stream, add/remove/restore offers before saving; rebalance whole-number shares; pin an offer share; Cancel or Push to KT. Only active offers are sent when saving. The UI rereads Keitaro after a save.
+- **Edit offer streams:** list campaigns, select stream, add/remove/restore offers before saving; rebalance whole-number shares; pin an offer share; Cancel or Push to KT. Active offers and any pre-existing disabled offers are sent when saving; disabled entries stay disabled unless explicitly restored. The UI rereads Keitaro after a save.
 - **Persistence:** Keitaro receives the selected `domain_id` on campaign creation. SQLAlchemy stores a local copy of the domain association for campaign URLs and an operation log. Keitaro remains the source of truth for campaign/stream/offer data.
 - **Safety:** API key is server-side. No writes on page load. Campaign creation starts disabled to avoid serving incomplete routing. If creation fails midway, a disabled campaign may remain in Keitaro and should be inspected manually.
 
@@ -29,7 +29,7 @@ alembic upgrade head
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Open <http://127.0.0.1:8000>. API docs at <http://127.0.0.1:8000/docs>.
+Open the Next.js UI at <http://localhost:3000> (start it separately per root README). FastAPI Swagger docs: <http://127.0.0.1:8000/docs>.
 
 Linux/macOS (from repository root): `python3 -m venv .venv; source .venv/bin/activate; pip install -r backend/requirements.txt; cd backend; cp .env.example .env; alembic upgrade head; uvicorn app.main:app --reload`.
 

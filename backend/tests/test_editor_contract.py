@@ -260,3 +260,40 @@ async def test_editor_endpoint_error_propagates_without_writing(db):
         assert tracker.put_calls == []
     finally:
         app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_editing_active_shares_preserves_preexisting_disabled_offer(db):
+    """A previously disabled offer is not an explicit Remove action in this edit."""
+    client = FakeTracker()
+    client.stream_data["offers"] = [
+        {"offer_id": 101, "share": 100, "state": "active"},
+        {"offer_id": 103, "share": 0, "state": "disabled"},
+    ]
+    await update_offers(client, db, 25, data(50, 50))
+    assert client.put_calls == [[
+        {"offer_id": 101, "share": 50, "state": "active"},
+        {"offer_id": 102, "share": 50, "state": "active"},
+        {"offer_id": 103, "share": 0, "state": "disabled"},
+    ]]
+
+
+@pytest.mark.asyncio
+async def test_reenabling_disabled_offer_does_not_duplicate_it(db):
+    client = FakeTracker()
+    client.stream_data["offers"] = [
+        {"offer_id": 101, "share": 100, "state": "active"},
+        {"offer_id": 102, "share": 0, "state": "disabled"},
+    ]
+    await update_offers(client, db, 25, data(50, 50))
+    assert [o["offer_id"] for o in client.put_calls[0]] == [101, 102]
+    assert all(o["state"] == "active" for o in client.put_calls[0])
+
+
+@pytest.mark.asyncio
+async def test_fastapi_root_opens_api_docs_not_obsolete_editor():
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                 base_url="http://local-test", follow_redirects=False) as client:
+        response = await client.get("/")
+    assert response.status_code == 307
+    assert response.headers["location"] == "/docs"

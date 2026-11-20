@@ -154,3 +154,16 @@ async def test_partial_campaign_error_mentions_id(db):
     tracker = MockKeitaro(fail_stream=1)
     with pytest.raises(KeitaroError, match="#42"):
         await create_campaign(tracker, db, Settings(), request())
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_unrelated_streams_even_when_count_is_two(db):
+    tracker = MockKeitaro()
+
+    async def other_streams(_campaign_id):
+        return [{"id": 11}, {"id": 999}]
+
+    tracker.streams = other_streams
+    with pytest.raises(KeitaroError, match="submitted flows.*#42|#42.*submitted flows"):
+        await create_campaign(tracker, db, Settings(), request())
+    assert db.scalar(select(OperationLog.status)) == "verify"

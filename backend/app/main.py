@@ -1,8 +1,5 @@
-from pathlib import Path
-
 from fastapi import Depends, FastAPI, HTTPException
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -15,8 +12,6 @@ from .service import create_campaign, update_offers
 
 
 app = FastAPI(title="Adrobot", version="1.0.0")
-PUBLIC = Path(__file__).parent / "static"
-app.mount("/static", StaticFiles(directory=PUBLIC), name="static")
 
 
 def get_client(settings: Settings = Depends(get_settings)):
@@ -31,7 +26,7 @@ async def handle_keitaro_error(_request, exc: KeitaroError):
 
 @app.get("/", include_in_schema=False)
 async def index():
-    return FileResponse(PUBLIC / "index.html")
+    return RedirectResponse(url="/docs")
 
 
 @app.get("/api/health")

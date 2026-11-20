@@ -58,7 +58,7 @@ async def create_campaign(client: KeitaroClient, db: Session, settings: Settings
         })
         campaign_id = int(campaign["id"])
         # Forced GEO redirect takes priority over the default offer stream.
-        await client.create_stream({
+        google_stream = await client.create_stream({
             "campaign_id": campaign_id,
             "name": "Google / " + ",".join(payload.geos),
             "type": "forced", "position": 1,
@@ -67,7 +67,7 @@ async def create_campaign(client: KeitaroClient, db: Session, settings: Settings
             "filters": [{"name": "country", "mode": "accept", "payload": payload.geos}],
             "collect_clicks": True, "state": "active",
         })
-        await client.create_stream({
+        offers_stream = await client.create_stream({
             "campaign_id": campaign_id,
             "name": "Offers",
             "type": "default", "position": 2,
@@ -81,8 +81,12 @@ async def create_campaign(client: KeitaroClient, db: Session, settings: Settings
         # Read back after the write; a successful HTTP response is not enough.
         final_campaign = await client.campaign(campaign_id)
         final_streams = await client.streams(campaign_id)
-        if len(final_streams) != 2:
-            raise KeitaroError("Created campaign does not contain exactly two flows", 409)
+        # Verify the IDs of *our* two streams, not just the number of streams.
+        # Otherwise a tracker inconsistency could be mistaken for a successful setup.
+        created_ids = {int(google_stream["id"]), int(offers_stream["id"])}
+        actual_ids = {int(item["id"]) for item in final_streams}
+        if len(final_streams) != 2 or actual_ids != created_ids:
+            raise KeitaroError("Created campaign streams differ from the two submitted flows", 409)
         # Store the already assigned parked domain locally for UI convenience.
         db.add(CampaignDomain(campaign_id=campaign_id, domain_id=payload.domain_id,
                               hostname=domain["name"]))
@@ -111,10 +115,18 @@ async def update_offers(client: KeitaroClient, db: Session, stream_id: int, data
     valid = {int(o["id"]) for o in offered if o.get("state") in (None, "active")}
     if any(o.offer_id not in valid for o in data.offers):
         raise KeitaroError("Selected offer does not exist or is archived", 422)
-    # Partial PUT: only the offers change. Keitaro keeps schema, filters and landings.
-    await client.update_stream_offers(stream_id, [offer.model_dump() for offer in data.offers])
+    # The editor sends active rows only. Preserve offers that were already disabled
+    # on the tracker: editing another offer must not accidentally delete them.
+    submitted = [offer.model_dump() for offer in data.offers]
+    submitted_ids = {offer.offer_id for offer in data.offers}
+    for existing in original.get("offers", []):
+        existing_id = int(existing["offer_id"])
+        if existing.get("state") == "disabled" and existing_id not in submitted_ids:
+            submitted.append({"offer_id": existing_id, "share": 0, "state": "disabled"})
+    # Partial PUT updates only the offer list, without modifying stream routing.
+    await client.update_stream_offers(stream_id, submitted)
     current = await client.stream(stream_id)
-    expected = {o.offer_id: (o.share, o.state) for o in data.offers}
+    expected = {o["offer_id"]: (o["share"], o["state"]) for o in submitted}
     actual = {int(o["offer_id"]): (int(o.get("share", 0)), o.get("state", "active"))
               for o in current.get("offers", [])}
     # Read-back must also confirm that this offer-only update did not change the
@@ -123,7 +135,7 @@ async def update_offers(client: KeitaroClient, db: Session, stream_id: int, data
     protected = ("campaign_id", "schema", "type", "position", "filters", "landings",
                  "action_type", "action_payload", "state")
     unexpected = [key for key in protected if key in original and current.get(key) != original[key]]
-    status = "success" if expected == actual and not unexpected else "verify"
+    status = "success" if expected == actual and len(current.get("offers", [])) == len(submitted) and not unexpected else "verify"
     detail = "" if status == "success" else "Keitaro read-back differs from submitted stream"
     _log(db, "update_offers", status, campaign_id=original.get("campaign_id"),
          stream_id=stream_id, details=detail)
