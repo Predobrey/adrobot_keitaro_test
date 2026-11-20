@@ -8,7 +8,8 @@ import {
   Save, Search, ShieldCheck, SlidersHorizontal, Target, Trash2, X,
 } from "lucide-react";
 import { api, type Campaign, type CampaignPayload, type CreatedCampaign, type Meta, type MetaItem, type Stream } from "@/lib/api";
-import { distribute, offersSignature, sharesValid, type OfferRow } from "@/lib/distribution";
+import { offersSignature, sharesValid, type OfferRow } from "@/lib/distribution";
+import { appendOffer, buildOffersPayload, changeShare, resetEditor, switchPin, switchRemoved } from "@/lib/editor";
 
 type Page = "create" | "edit";
 type Notice = { kind: "success" | "error" | "info"; message: string };
@@ -108,7 +109,7 @@ export default function Dashboard() {
   }
   function navigate(next: Page) {
     if (next === page || !warnUnsaved()) return;
-    if (dirty) setRows(baseline.map((row) => ({ ...row })));
+    if (dirty) setRows(resetEditor(baseline));
     setPage(next);
     setNotice(null);
   }
@@ -223,27 +224,23 @@ export default function Dashboard() {
 
   function updateShare(id: number, text: string) {
     if (!/^\d+$/.test(text)) return;
-    const value = Number(text);
-    if (!Number.isInteger(value) || value < 0 || value > 100) return;
-    const proposed = rows.map((row) => row.id === id ? { ...row, share: value, locked: true } : { ...row });
-    if (proposed.filter((row) => !row.removed && row.locked).reduce((total, row) => total + row.share, 0) > 100) {
-      setNotice({ kind: "error", message: "Сумма закреплённых долей не может превышать 100%." });
-      return;
+    try {
+      setRows(changeShare(rows, id, Number(text)));
+      setNotice(null);
+    } catch (error) {
+      setNotice({ kind: "error", message: getMessage(error) });
     }
-    setRows(distribute(proposed));
-    setNotice(null);
   }
   function togglePin(id: number) {
-    setRows((previous) => distribute(previous.map((row) => row.id === id ? { ...row, locked: !row.locked } : row)));
+    setRows((previous) => switchPin(previous, id));
   }
   function toggleRemoved(id: number) {
-    if (activeRows.length === 1 && activeRows[0].id === id) {
-      setNotice({ kind: "error", message: "В потоке должен остаться хотя бы один активный оффер." });
-      return;
+    try {
+      setRows(switchRemoved(rows, id));
+      setNotice(null);
+    } catch (error) {
+      setNotice({ kind: "error", message: getMessage(error) });
     }
-    setRows((previous) => distribute(previous.map((row) => row.id === id
-      ? { ...row, removed: !row.removed, locked: false, share: 0 } : row)));
-    setNotice(null);
   }
   function addOffer() {
     const id = Number(addOfferId);
@@ -252,19 +249,18 @@ export default function Dashboard() {
       setNotice({ kind: "error", message: "Выберите доступный оффер из Keitaro." });
       return;
     }
-    if (rows.some((row) => row.id === id && !row.removed)) return;
-    const exists = rows.some((row) => row.id === id);
-    const proposed = exists ? rows.map((row) => row.id === id ? { ...row, removed: false, share: 0, locked: false } : row)
-      : [...rows, { id, name: item.name, share: 0, locked: false, removed: false }];
-    setRows(distribute(proposed));
-    setAddOfferId("");
-    setOfferSearch("");
-    setNotice(null);
+    try {
+      setRows(appendOffer(rows, { id, name: item.name }));
+      setAddOfferId("");
+      setOfferSearch("");
+      setNotice(null);
+    } catch (error) {
+      setNotice({ kind: "error", message: getMessage(error) });
+    }
   }
   async function saveOffers() {
     if (!streamId || !dirty || !valid || editorBusy) return;
-    const payload = rows.filter((row) => !row.removed)
-      .map((row) => ({ offer_id: row.id, share: row.share, state: "active" }));
+    const payload = buildOffersPayload(rows);
     if (!window.confirm(`Сохранить в Keitaro ${payload.length} активных офферов для потока №${streamId}?`)) return;
     const request = ++requestRef.current;
     setEditorBusy(true);
@@ -342,7 +338,7 @@ export default function Dashboard() {
                   <div className="offer-table-head"><span>ОФФЕР</span><span>ДОЛЯ ТРАФИКА</span><span>ДЕЙСТВИЕ</span></div>
                   <div className="offer-list">{rows.map((row) => <div className={`offer-row ${row.removed ? "removed" : ""}`} key={row.id}><div className="offer-name"><span className="offer-avatar"><Target size={17} /></span><div><strong>{row.name}</strong><small>Оффер №{row.id}</small></div></div><div className="share-group">{row.removed ? <span className="removed-label">0% · Удалён</span> : <><div className="share-input"><input type="number" aria-label={`Доля оффера №${row.id}`} min="0" max="100" step="1" value={row.share} disabled={editorBusy} onChange={(e) => updateShare(row.id, e.target.value)} /><span>%</span></div><button className={`icon-btn ${row.locked ? "locked" : ""}`} title={row.locked ? "Открепить долю" : "Закрепить долю"} aria-label={row.locked ? `Открепить долю оффера №${row.id}` : `Закрепить долю оффера №${row.id}`} disabled={editorBusy} onClick={() => togglePin(row.id)}><LockKeyhole size={16} /></button></>}</div><div className="offer-action"><button className={`btn ${row.removed ? "outline restore" : "danger-ghost"} small`} disabled={editorBusy} onClick={() => toggleRemoved(row.id)}>{row.removed ? <><RotateCcw size={15} /> Вернуть</> : <><Trash2 size={15} /> Удалить</>}</button></div></div>)}</div>
                   <div className="add-section"><div className="add-heading"><Plus size={17} /><strong>Добавить оффер</strong></div><div className="add-grid"><div className="field-icon"><Search size={16} /><input aria-label="Поиск офферов для добавления" value={offerSearch} onChange={(e) => setOfferSearch(e.target.value)} placeholder="Поиск по названию или ID" disabled={editorBusy} /></div><div className="select-wrap"><select aria-label="Выбор оффера для добавления" value={addOfferId} disabled={editorBusy} onChange={(e) => setAddOfferId(e.target.value)}><option value="">Выберите оффер</option>{(filteredEditOffers.some((x) => String(x.id) === addOfferId) ? filteredEditOffers : [...filteredEditOffers, ...activeOffers.filter((x) => String(x.id) === addOfferId)]).map((item) => <option key={item.id} value={item.id}>{item.name} · #{item.id}</option>)}</select><ChevronDown size={16} className="select-chevron" /></div><button className="btn outline" onClick={addOffer} disabled={!addOfferId || editorBusy}><Plus size={17} /> Добавить</button></div></div>
-                  <div className="editor-footer"><div className={`total ${valid ? "" : "invalid"}`}><span>Всего распределено</span><strong>{sum}% <span>/ 100%</span></strong></div><div className="editor-buttons"><button className="btn outline" disabled={!dirty || editorBusy} onClick={() => { setRows(baseline.map((row) => ({ ...row }))); setNotice(null); }}><X size={16} /> Отменить</button><button className="btn primary" disabled={!dirty || !valid || editorBusy} onClick={() => void saveOffers()}><Save size={17} /> {editorBusy ? "Сохраняем…" : "Сохранить в Keitaro"}</button></div></div>
+                  <div className="editor-footer"><div className={`total ${valid ? "" : "invalid"}`}><span>Всего распределено</span><strong>{sum}% <span>/ 100%</span></strong>{!valid && <small className="share-validation-message">Для сохранения сумма долей должна быть 100%. Снимите закрепление или измените проценты.</small>}</div><div className="editor-buttons"><button className="btn outline" disabled={!dirty || editorBusy} onClick={() => { setRows(resetEditor(baseline)); setNotice(null); }}><X size={16} /> Отменить</button><button className="btn primary" disabled={!dirty || !valid || editorBusy} onClick={() => void saveOffers()}><Save size={17} /> {editorBusy ? "Сохраняем…" : "Сохранить в Keitaro"}</button></div></div>
                 </>}
               </section>
               <div className="right-stack"><section className="panel summary-panel"><span className="eyebrow">ОБЗОР ПОТОКА</span><h2>Распределение трафика</h2><p className="aside-lead">Проверьте распределение активных офферов перед сохранением.</p><div className="summary-stat"><span>Активных офферов</span><strong>{activeRows.length}</strong></div><div className="summary-stat"><span>Распределено трафика</span><strong className={valid ? "good" : "bad"}>{sum}%</strong></div><div className="summary-stat"><span>Несохранённые изменения</span><strong>{dirty ? "Да" : "Нет"}</strong></div><div className="share-bar" aria-label={`Распределено трафика: ${sum}%`}><span style={{ width: `${Math.min(sum, 100)}%` }} /></div><div className="summary-tip"><CircleAlert size={16} /><p>Изменения не отправляются в Keitaro до нажатия <strong>«Сохранить в Keitaro»</strong>. После сохранения поток загружается повторно для проверки.</p></div></section><div className="tip-card"><div className="tip-icon"><Check size={20} /></div><div><strong>Точные проценты</strong><p>Незакреплённые офферы делят оставшийся процент без ошибок округления.</p></div></div></div>

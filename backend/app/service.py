@@ -117,9 +117,16 @@ async def update_offers(client: KeitaroClient, db: Session, stream_id: int, data
     expected = {o.offer_id: (o.share, o.state) for o in data.offers}
     actual = {int(o["offer_id"]): (int(o.get("share", 0)), o.get("state", "active"))
               for o in current.get("offers", [])}
-    status = "success" if expected == actual else "verify"
+    # Read-back must also confirm that this offer-only update did not change the
+    # stream routing configuration. Compare only fields actually returned before
+    # the write to stay compatible with different Keitaro versions.
+    protected = ("campaign_id", "schema", "type", "position", "filters", "landings",
+                 "action_type", "action_payload", "state")
+    unexpected = [key for key in protected if key in original and current.get(key) != original[key]]
+    status = "success" if expected == actual and not unexpected else "verify"
+    detail = "" if status == "success" else "Keitaro read-back differs from submitted stream"
     _log(db, "update_offers", status, campaign_id=original.get("campaign_id"),
-         stream_id=stream_id, details="" if status == "success" else "Keitaro returned different offer shares")
+         stream_id=stream_id, details=detail)
     if status != "success":
         raise KeitaroError("Keitaro accepted update, but read-back differs. Check tracker manually", 409)
     return current

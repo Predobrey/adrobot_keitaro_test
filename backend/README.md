@@ -18,10 +18,11 @@ Small FastAPI + SQLAlchemy application for the ETOLEGKO test assignment.
 ## Setup (Windows PowerShell)
 
 ```powershell
-cd backend
+# From the repository root:
 py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+python -m pip install -r .\backend\requirements.txt
+cd backend
 Copy-Item .env.example .env
 # Edit .env: enter the tracker base URL and API key; never commit .env.
 alembic upgrade head
@@ -30,7 +31,7 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 
 Open <http://127.0.0.1:8000>. API docs at <http://127.0.0.1:8000/docs>.
 
-Linux/macOS: `python3 -m venv .venv; source .venv/bin/activate; pip install -r requirements.txt; cp .env.example .env; alembic upgrade head; uvicorn app.main:app --reload`.
+Linux/macOS (from repository root): `python3 -m venv .venv; source .venv/bin/activate; pip install -r backend/requirements.txt; cd backend; cp .env.example .env; alembic upgrade head; uvicorn app.main:app --reload`.
 
 ## Environment
 
@@ -49,7 +50,9 @@ Keitaro calls use header `Api-Key`. Outside localhost, the application requires 
 pytest -q
 ```
 
-Tests use mocked Keitaro responses; a live tracker isn't required. Before submitting, verify creating a campaign and editing offers against an **authorized test campaign** in Keitaro.
+Tests use mocked Keitaro responses; a live tracker isn't required. `test_editor_contract.py` checks the offer-only PUT payload, invalid percentages, refused API writes, read-back verification and preservation of filters and routing configuration. The frontend also tests pure offer-editor operations without a browser.
+
+The shared Keitaro test account currently exposes just one offer and returns 403 when creating offers. Multiple-offer save behavior is therefore mock-verified rather than live-verified; do not remove or alter the shared catalog offer.
 
 ## Validation errors and first live test
 

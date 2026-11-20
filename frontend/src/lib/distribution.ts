@@ -25,6 +25,8 @@ export function distribute(rows: OfferRow[]): OfferRow[] {
 export function sharesValid(rows: OfferRow[]): boolean {
   const active = rows.filter((row) => !row.removed);
   return active.length > 0 &&
+    active.every((row) => Number.isSafeInteger(row.id) && row.id > 0) &&
+    new Set(active.map((row) => row.id)).size === active.length &&
     active.every((row) => Number.isInteger(row.share) && row.share >= 0 && row.share <= 100) &&
     active.reduce((sum, row) => sum + row.share, 0) === 100;
 }
