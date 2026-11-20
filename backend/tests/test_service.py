@@ -86,6 +86,11 @@ async def test_create_campaign_with_two_flows(db):
     assert result["url"] == "https://track.example/abc123"
     assert [x[0] for x in tracker.calls] == ["create_campaign", "create_stream", "create_stream", "enable_campaign"]
     assert tracker.calls[0][1]["state"] == "disabled"
+    assert tracker.calls[0][1]["alias"].startswith("test_")
+    assert len(tracker.calls[0][1]["alias"]) > len("test_")
+    assert tracker.calls[0][1]["domain_id"] == 3
+    assert tracker.calls[0][1]["group_id"] == "4"
+    assert tracker.calls[0][1]["traffic_source_id"] == 5
     redirect = tracker.calls[1][1]
     assert redirect["type"] == "forced" and redirect["schema"] == "redirect"
     assert redirect["filters"] == [{"name": "country", "mode": "accept", "payload": ["AU", "MX"]}]
@@ -94,6 +99,23 @@ async def test_create_campaign_with_two_flows(db):
     assert regular["type"] == "default" and regular["schema"] == "landings"
     assert regular["offers"] == [{"offer_id": 7, "share": 100, "state": "active"}]
     assert db.get(CampaignDomain, 42).hostname == "track.example"
+
+
+@pytest.mark.asyncio
+async def test_selected_domain_is_sent_to_keitaro_not_just_stored_locally(db):
+    tracker = MockKeitaro()
+
+    async def domains():
+        return [{"id": 3, "state": "active", "name": "track.example"},
+                {"id": 9, "state": "active", "name": "alternate.example"}]
+
+    tracker.domains = domains
+    data = request().model_copy(update={"domain_id": 9})
+    result = await create_campaign(tracker, db, Settings(), data)
+
+    assert tracker.calls[0][1]["domain_id"] == 9
+    assert result["domain"] == "alternate.example"
+    assert db.get(CampaignDomain, 42).domain_id == 9
 
 
 @pytest.mark.asyncio
@@ -114,3 +136,21 @@ async def test_update_only_offers(db):
     assert [x["share"] for x in actual["offers"]] == [50, 50]
     assert tracker.calls == [("update", 11, data.model_dump()["offers"])]
     assert db.scalar(select(OperationLog.status)) == "success"
+
+
+@pytest.mark.asyncio
+async def test_alias_generated_as_safe_nonempty_unique_value(db):
+    from app.service import _campaign_alias
+
+    first = _campaign_alias("test_uhtikov_campaign1")
+    second = _campaign_alias("test_uhtikov_campaign1")
+    assert first.startswith("test_uhtikov_campaign1_")
+    assert second != first
+    assert all(char.islower() or char.isdigit() or char in "_-" for char in first)
+
+
+@pytest.mark.asyncio
+async def test_partial_campaign_error_mentions_id(db):
+    tracker = MockKeitaro(fail_stream=1)
+    with pytest.raises(KeitaroError, match="#42"):
+        await create_campaign(tracker, db, Settings(), request())

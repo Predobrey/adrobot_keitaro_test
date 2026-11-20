@@ -6,7 +6,7 @@ Small FastAPI + SQLAlchemy application for the ETOLEGKO test assignment.
 
 - **Create campaigns:** name, one or multiple ISO-2 GEO codes, existing offer, existing parked domain, campaign group, traffic source. Creates a disabled campaign, then two flows: `forced` country-filtered HTTP redirect to Google and `default` stream with an offer. Enables the campaign only after both flows are created.
 - **Edit offer streams:** list campaigns, select stream, add/remove/restore offers before saving; rebalance whole-number shares; pin an offer share; Cancel or Push to KT. Only active offers are sent when saving. The UI rereads Keitaro after a save.
-- **Persistence:** SQLAlchemy keeps the selected domain association for campaign URLs and an operation log. Keitaro remains the source of truth for campaign/stream/offer data.
+- **Persistence:** Keitaro receives the selected `domain_id` on campaign creation. SQLAlchemy stores a local copy of the domain association for campaign URLs and an operation log. Keitaro remains the source of truth for campaign/stream/offer data.
 - **Safety:** API key is server-side. No writes on page load. Campaign creation starts disabled to avoid serving incomplete routing. If creation fails midway, a disabled campaign may remain in Keitaro and should be inspected manually.
 
 ## Requirements
@@ -51,9 +51,18 @@ pytest -q
 
 Tests use mocked Keitaro responses; a live tracker isn't required. Before submitting, verify creating a campaign and editing offers against an **authorized test campaign** in Keitaro.
 
+## Validation errors and first live test
+
+Keitaro requires a non-empty campaign `alias`. Adrobot generates a URL-safe alias
+from the supplied campaign name with a short random suffix to avoid collisions.
+On an upstream validation failure, the UI shows the HTTP status and failed Admin API
+operation, plus any structured validation details returned by Keitaro.
+If a failure occurs after a campaign was created, inspect its ID in Keitaro before
+trying again; the partially created campaign may already exist.
+
 ## Design notes / boundaries
 
-- Domain is selected from **existing parked domains** via `GET /domains`. Keitaro's publicly documented `POST /campaigns` schema has no `domain_id`; the selected host is stored locally to construct the campaign link with the campaign alias. This **does not change domain parking or default domain settings** in Keitaro.
+- Domain is selected from **existing parked domains** via `GET /domains` and assigned to the created campaign using `domain_id` in `POST /campaigns`. This does not change a domain's default campaign or global parking settings.
 - Geo filter uses the Keitaro `country` filter, `accept` mode and an array of ISO-2 codes. Flow priority is set by `forced` and `default` types with position rotation.
 - First flow uses `schema=redirect`, `action_type=http`, `action_payload=https://www.google.com/` (HTTP redirect).
 - Second flow uses `schema=landings` with empty landings and one 100% offer; existing offers are updated with partial `PUT /streams/{id}` containing only the `offers` array, leaving unrelated stream fields untouched.

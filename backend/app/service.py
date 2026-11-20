@@ -1,4 +1,5 @@
-from urllib.parse import urlparse
+import re
+import secrets
 
 from sqlalchemy.orm import Session
 
@@ -13,6 +14,12 @@ def _find(items, item_id: int, name: str):
     if not item:
         raise KeitaroError(f"Selected {name} ID {item_id} not found in Keitaro", 422)
     return item
+
+
+def _campaign_alias(name: str) -> str:
+    # Keitaro requires a non-blank alias, unique enough for shared test trackers.
+    prefix = re.sub(r"[^a-z0-9_-]+", "-", name.lower()).strip("-_")[:60] or "campaign"
+    return f"{prefix}_{secrets.token_hex(4)}"
 
 
 def _campaign_url(hostname: str, alias: str) -> str:
@@ -43,8 +50,10 @@ async def create_campaign(client: KeitaroClient, db: Session, settings: Settings
     enabled = False
     try:
         campaign = await client.create_campaign({
-            "name": payload.name, "alias": "", "type": "position", "state": "disabled",
+            "name": payload.name, "alias": _campaign_alias(payload.name), "type": "position", "state": "disabled",
             "group_id": str(payload.group_id), "traffic_source_id": payload.traffic_source_id,
+            # Domain binding is a campaign field in Keitaro Admin API.
+            "domain_id": payload.domain_id,
             "cost_type": "CPC", "cost_value": 0,
         })
         campaign_id = int(campaign["id"])
@@ -74,7 +83,7 @@ async def create_campaign(client: KeitaroClient, db: Session, settings: Settings
         final_streams = await client.streams(campaign_id)
         if len(final_streams) != 2:
             raise KeitaroError("Created campaign does not contain exactly two flows", 409)
-        # Domain is a parked URL host; not a field of campaign POST in documented API.
+        # Store the already assigned parked domain locally for UI convenience.
         db.add(CampaignDomain(campaign_id=campaign_id, domain_id=payload.domain_id,
                               hostname=domain["name"]))
         _log(db, "create_campaign", "success", campaign_id=campaign_id)
@@ -82,12 +91,15 @@ async def create_campaign(client: KeitaroClient, db: Session, settings: Settings
         return {"id": campaign_id, "name": payload.name, "alias": alias,
                 "domain": domain["name"], "url": _campaign_url(domain["name"], alias),
                 "streams": final_streams}
-    except Exception:
-        # A failed stream leaves a DISABLED campaign. An error after enabling
-        # means state is uncertain: notify the operator rather than claim disabled.
+    except Exception as exc:
+        # Keitaro may have persisted a campaign before a later stream fails.
+        # Never retry blindly; tell the operator which campaign to inspect.
         if campaign_id is not None:
             _log(db, "create_campaign", "verify" if enabled else "partial", campaign_id=campaign_id,
                  details="Inspect campaign in Keitaro; operation was not fully verified")
+            if isinstance(exc, KeitaroError):
+                raise KeitaroError(f"{exc}; кампания #{campaign_id} могла быть создана частично — "
+                                   "проверьте её в Keitaro перед повторной попыткой", exc.status) from exc
         raise
 
 

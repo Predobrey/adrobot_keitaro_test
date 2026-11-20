@@ -13,6 +13,41 @@ class KeitaroError(Exception):
         self.status = status
 
 
+def _error_details(body: object) -> str:
+    """Extract short, useful Keitaro validation messages without dumping the response."""
+    if not isinstance(body, dict):
+        return ""
+
+    errors = body.get("errors")
+    if isinstance(errors, dict):
+        entries = []
+        for field, messages in list(errors.items())[:4]:
+            if isinstance(messages, list):
+                messages = ", ".join(str(msg) for msg in messages[:2])
+            entries.append(f"{field}: {messages}")
+        return "; ".join(entries)[:400]
+    if isinstance(errors, list):
+        entries = []
+        for item in errors[:4]:
+            if isinstance(item, dict):
+                field = item.get("field") or item.get("path") or item.get("name") or ""
+                msg = item.get("message") or item.get("msg") or item.get("error") or ""
+                entries.append(f"{field}: {msg}" if field else str(msg))
+            else:
+                entries.append(str(item))
+        return "; ".join(entries)[:400]
+
+    for key in ("detail", "message", "error"):
+        value = body.get(key)
+        if isinstance(value, str):
+            return value[:400]
+        if isinstance(value, dict):
+            return _error_details({"errors": value})
+        if isinstance(value, list):
+            return _error_details({"errors": value})
+    return ""
+
+
 class KeitaroClient:
     def __init__(self, settings: Settings, *, transport: httpx.AsyncBaseTransport | None = None):
         self.settings = settings
@@ -41,15 +76,19 @@ class KeitaroClient:
             if response.is_redirect:
                 raise KeitaroError("Keitaro redirected API request; check tracker URL and access", 502)
             if response.status_code >= 400:
-                # Do not forward arbitrary tracker HTML or secret-bearing debug dumps to the UI.
+                # Show the failed operation and validation fields, never headers or raw HTML.
                 detail = ""
                 try:
-                    body = response.json()
-                    if isinstance(body, dict):
-                        detail = str(body.get("error") or body.get("message") or "")[:250]
+                    detail = _error_details(response.json())
                 except ValueError:
                     pass
-                raise KeitaroError(f"Keitaro HTTP {response.status_code}" + (f": {detail}" if detail else ""), 502)
+                if self.settings.keitaro_api_key:
+                    detail = detail.replace(self.settings.keitaro_api_key, "[скрыто]")
+                operation = f"{method.upper()} {path.lstrip('/')}"
+                message = f"Keitaro HTTP {response.status_code}: {operation}"
+                if detail:
+                    message += f" — {detail}"
+                raise KeitaroError(message, 502)
             try:
                 return response.json()
             except ValueError as exc:

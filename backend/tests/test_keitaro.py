@@ -39,3 +39,27 @@ async def test_unconfigured_tracker_is_rejected():
     with pytest.raises(KeitaroError) as exc:
         await client.offers()
     assert exc.value.status == 503
+
+
+@pytest.mark.asyncio
+async def test_validation_error_shows_endpoint_and_fields_without_api_key():
+    key = "sensitive-credential"
+    settings = Settings(keitaro_base_url="https://tracker.example", keitaro_api_key=key)
+    client = KeitaroClient(settings, transport=httpx.MockTransport(
+        lambda _req: httpx.Response(422, json={"errors": {"alias": ["must not be blank"], "other": [key]}})
+    ))
+    with pytest.raises(KeitaroError) as exc:
+        await client.create_campaign({"alias": ""})
+    assert "POST campaigns" in str(exc.value)
+    assert "alias: must not be blank" in str(exc.value)
+    assert key not in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_validation_error_accepts_detail_array():
+    settings = Settings(keitaro_base_url="https://tracker.example", keitaro_api_key="key")
+    client = KeitaroClient(settings, transport=httpx.MockTransport(
+        lambda _req: httpx.Response(422, json={"detail": [{"field": "filters", "message": "invalid value"}]})
+    ))
+    with pytest.raises(KeitaroError, match="filters: invalid value"):
+        await client.create_stream({"schema": "redirect"})

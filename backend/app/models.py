@@ -11,7 +11,7 @@ def utcnow():
 
 
 class CampaignDomain(Base):
-    """UI-selected parked domain; Keitaro campaign API has no domain_id field."""
+    """Local copy of the domain assigned to the Keitaro campaign via domain_id."""
 
     __tablename__ = "campaign_domains"
 
