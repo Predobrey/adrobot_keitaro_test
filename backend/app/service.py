@@ -29,6 +29,12 @@ def _campaign_url(hostname: str, alias: str) -> str:
     return f"{name}/{alias.lstrip('/')}"
 
 
+def _admin_campaign_url(base_url: str, campaign_id: int) -> str:
+    # ETOLEGKO emulator uses a hash-based campaign editor route.
+    # Unlike the tracking domain, the Admin URL works without live clicks.
+    return f"{base_url.rstrip('/')}/admin/#!/campaign/{campaign_id}/main"
+
+
 def _log(db: Session, action: str, status: str, *, campaign_id=None, stream_id=None, details=""):
     db.add(OperationLog(action=action, status=status, campaign_id=campaign_id,
                         stream_id=stream_id, details=details[:500]))
@@ -94,6 +100,7 @@ async def create_campaign(client: KeitaroClient, db: Session, settings: Settings
         alias = final_campaign.get("alias") or campaign.get("alias") or ""
         return {"id": campaign_id, "name": payload.name, "alias": alias,
                 "domain": domain["name"], "url": _campaign_url(domain["name"], alias),
+                "admin_url": _admin_campaign_url(settings.keitaro_base_url, campaign_id),
                 "streams": final_streams}
     except Exception as exc:
         # Keitaro may have persisted a campaign before a later stream fails.

@@ -81,9 +81,10 @@ def request():
 @pytest.mark.asyncio
 async def test_create_campaign_with_two_flows(db):
     tracker = MockKeitaro()
-    result = await create_campaign(tracker, db, Settings(), request())
+    result = await create_campaign(tracker, db, Settings(keitaro_base_url="https://tracker.example"), request())
     assert result["id"] == 42
     assert result["url"] == "https://track.example/abc123"
+    assert result["admin_url"] == "https://tracker.example/admin/#!/campaign/42/main"
     assert [x[0] for x in tracker.calls] == ["create_campaign", "create_stream", "create_stream", "enable_campaign"]
     assert tracker.calls[0][1]["state"] == "disabled"
     assert tracker.calls[0][1]["alias"].startswith("test_")
@@ -167,3 +168,15 @@ async def test_create_rejects_unrelated_streams_even_when_count_is_two(db):
     with pytest.raises(KeitaroError, match="submitted flows.*#42|#42.*submitted flows"):
         await create_campaign(tracker, db, Settings(), request())
     assert db.scalar(select(OperationLog.status)) == "verify"
+
+
+@pytest.mark.asyncio
+async def test_created_campaign_contains_emulator_admin_link(db):
+    tracker = MockKeitaro()
+    settings = Settings(keitaro_base_url="https://keitaro-for-tests.etolegko.com/")
+    result = await create_campaign(tracker, db, settings, request())
+    assert result["admin_url"] == (
+        "https://keitaro-for-tests.etolegko.com/admin/#!/campaign/42/main"
+    )
+    assert result["url"] == "https://track.example/abc123"
+    assert result["admin_url"] != result["url"]

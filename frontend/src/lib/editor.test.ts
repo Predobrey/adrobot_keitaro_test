@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { appendOffer, buildOffersPayload, changeShare, resetEditor, switchPin, switchRemoved } from "./editor.ts";
+import { appendOffer, buildOffersPayload, changeShare, parseShareInput, resetEditor, switchPin, switchRemoved } from "./editor.ts";
 import { offersSignature, sharesValid, type OfferRow } from "./distribution.ts";
 
 const row = (id: number, share = 0): OfferRow => ({
@@ -127,4 +127,15 @@ test("pin-only change has no effect on remote payload", () => {
   const pinned = switchPin(before, 1);
   assert.equal(offersSignature(before), offersSignature(pinned));
   assert.deepEqual(buildOffersPayload(pinned), buildOffersPayload(before));
+});
+
+
+test("percentage input can be cleared before replacement, but blank is not a saved share", () => {
+  assert.equal(parseShareInput(""), null);
+  assert.equal(parseShareInput("40"), 40);
+  assert.equal(parseShareInput("0"), 0);
+  assert.equal(parseShareInput("100"), 100);
+  for (const text of ["-1", "101", "40.5", "1e2", "abc", "999999999999999999999"]) {
+    assert.throws(() => parseShareInput(text), /целым числом/);
+  }
 });

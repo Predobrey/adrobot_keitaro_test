@@ -34,7 +34,8 @@ export interface CreatedCampaign {
   name: string;
   alias: string;
   domain: string;
-  url: string;
+  url: string; // Tracking URL (not a working redirect in the emulator)
+  admin_url: string; // Direct link to the campaign in Keitaro admin
   streams: Stream[];
 }
 export interface CampaignPayload {

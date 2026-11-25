@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { api, type Campaign, type CampaignPayload, type CreatedCampaign, type Meta, type MetaItem, type Stream } from "@/lib/api";
 import { offersSignature, sharesValid, type OfferRow } from "@/lib/distribution";
-import { appendOffer, buildOffersPayload, changeShare, resetEditor, switchPin, switchRemoved } from "@/lib/editor";
+import { appendOffer, buildOffersPayload, changeShare, parseShareInput, resetEditor, switchPin, switchRemoved } from "@/lib/editor";
 
 type Page = "create" | "edit";
 type Notice = { kind: "success" | "error" | "info"; message: string };
@@ -58,6 +58,7 @@ export default function Dashboard() {
   const [availableStreams, setAvailableStreams] = useState<Stream[]>([]);
   const [stream, setStream] = useState<Stream | null>(null);
   const [rows, setRows] = useState<OfferRow[]>([]);
+  const [emptyShareIds, setEmptyShareIds] = useState<number[]>([]);
   const [baseline, setBaseline] = useState<OfferRow[]>([]);
   const [editorBusy, setEditorBusy] = useState(false);
   const [offerSearch, setOfferSearch] = useState("");
@@ -65,8 +66,8 @@ export default function Dashboard() {
   const requestRef = useRef(0);
 
   const ready = connection === "ready";
-  const dirty = offersSignature(rows) !== offersSignature(baseline);
-  const valid = sharesValid(rows);
+  const dirty = offersSignature(rows) !== offersSignature(baseline) || emptyShareIds.length > 0;
+  const valid = sharesValid(rows) && emptyShareIds.length === 0;
   const activeRows = rows.filter((row) => !row.removed);
   const sum = activeRows.reduce((total, row) => total + row.share, 0);
   const activeOffers = useMemo(() => (meta?.offers ?? []).filter((item) => item.state === undefined || item.state === "active"), [meta]);
@@ -109,7 +110,7 @@ export default function Dashboard() {
   }
   function navigate(next: Page) {
     if (next === page || !warnUnsaved()) return;
-    if (dirty) setRows(resetEditor(baseline));
+    if (dirty) { setRows(resetEditor(baseline)); setEmptyShareIds([]); }
     setPage(next);
     setNotice(null);
   }
@@ -161,6 +162,7 @@ export default function Dashboard() {
     setStreamId("");
     setStream(null);
     setRows([]);
+    setEmptyShareIds([]);
     setBaseline([]);
     setAvailableStreams([]);
     setOfferSearch("");
@@ -189,6 +191,7 @@ export default function Dashboard() {
     setStreamId(String(id));
     setStream(value);
     setRows(incoming);
+    setEmptyShareIds([]);
     setBaseline(incoming.map((row) => ({ ...row })));
     setOfferSearch("");
     setAddOfferId("");
@@ -200,6 +203,7 @@ export default function Dashboard() {
     setStreamId(id);
     setStream(null);
     setRows([]);
+    setEmptyShareIds([]);
     setBaseline([]);
     setNotice(null);
     if (!id) return;
@@ -228,9 +232,16 @@ export default function Dashboard() {
   }
 
   function updateShare(id: number, text: string) {
-    if (!/^\d+$/.test(text)) return;
     try {
-      setRows(changeShare(rows, id, Number(text)));
+      const value = parseShareInput(text);
+      if (value === null) {
+        // Allow clearing a controlled input before typing the replacement.
+        // This draft cannot be saved until a valid percentage is entered.
+        setEmptyShareIds((current) => current.includes(id) ? current : [...current, id]);
+      } else {
+        setRows(changeShare(rows, id, value));
+        setEmptyShareIds((current) => current.filter((item) => item !== id));
+      }
       setNotice(null);
     } catch (error) {
       setNotice({ kind: "error", message: getMessage(error) });
@@ -242,6 +253,7 @@ export default function Dashboard() {
   function toggleRemoved(id: number) {
     try {
       setRows(switchRemoved(rows, id));
+      setEmptyShareIds((current) => current.filter((item) => item !== id));
       setNotice(null);
     } catch (error) {
       setNotice({ kind: "error", message: getMessage(error) });
@@ -330,7 +342,7 @@ export default function Dashboard() {
               <div className="right-stack">
                 <section className="panel routing-panel"><div className="aside-heading"><span className="eyebrow">СХЕМА ПЕРЕНАПРАВЛЕНИЙ</span><span className="live-chip"><span /> 2 ПОТОКА</span></div><h2>Маршрутизация трафика</h2><p className="aside-lead">Направление перехода зависит от страны посетителя.</p><div className="flow-start"><Globe2 size={20} /><div><strong>Входящий посетитель</strong><small>Трекинговая ссылка Keitaro</small></div></div><div className="flow-line" /><div className="flow-card google"><div className="flow-symbol">G</div><div><span className="flow-label">ПОТОК 01 · ПРИОРИТЕТНЫЙ</span><strong>Переход в Google</strong><small>{form.geos.trim() ? form.geos.toUpperCase().split(/[,;\s]+/).filter(Boolean).join(" · ") : "Выбранные страны"}</small></div><ArrowUpRight size={18} /></div><div className="flow-connector"><span>ОСТАЛЬНОЙ ТРАФИК</span><ArrowDownRight size={17} /></div><div className="flow-card offer"><div className="flow-symbol"><Target size={19} /></div><div><span className="flow-label">ПОТОК 02 · ПО УМОЛЧАНИЮ</span><strong>Выбранный оффер</strong><small>{form.offerId ? `Оффер №${form.offerId}` : "Все остальные страны"}</small></div><ArrowUpRight size={18} /></div><div className="routing-foot"><CheckCircle2 size={16} /><span>Приоритет потоков: по позиции</span></div></section>
                 <div className="tip-card"><div className="tip-icon"><ShieldCheck size={20} /></div><div><strong>Безопасная работа</strong><p>API-ключ доступен только backend FastAPI. Создание кампании требует подтверждения.</p></div></div>
-                {created && <section className="panel created-card"><span className="eyebrow">СОЗДАНО В KEITARO</span><h3>{created.name} · #{created.id}</h3><a href={created.url} target="_blank" rel="noopener noreferrer">Открыть ссылку кампании <ExternalLink size={15} /></a><button className="text-button" onClick={() => void navigator.clipboard.writeText(created.url)}><Copy size={15} /> Копировать ссылку</button></section>}
+                {created && <section className="panel created-card"><span className="eyebrow">СОЗДАНО В KEITARO</span><h3>{created.name} · #{created.id}</h3><a href={created.admin_url} target="_blank" rel="noopener noreferrer">Открыть в Keitaro <ExternalLink size={15} /></a><button className="text-button" onClick={() => void navigator.clipboard.writeText(created.admin_url)}><Copy size={15} /> Копировать ссылку на кампанию</button></section>}
               </div>
             </div>
           ) : (
@@ -341,9 +353,9 @@ export default function Dashboard() {
                 <div className="editor-toolbar"><span><span className="toolbar-dot" />{stream ? `Поток №${stream.id} · ${stream.name}` : editorBusy ? "Загружаем данные Keitaro…" : campaignId && !availableStreams.length ? "Нет потоков для редактирования офферов" : "Для начала выберите кампанию"}</span><button className="btn outline small" onClick={() => void reloadStream()} disabled={!stream || editorBusy}><RefreshCcw size={15} /> Обновить</button></div>
                 {!stream ? <div className="empty-state"><div className="empty-illustration"><Layers3 size={34} /></div><h3>Поток не выбран</h3><p>Выберите кампанию и поток с офферами, чтобы изменить их доли трафика.</p></div> : <>
                   <div className="offer-table-head"><span>ОФФЕР</span><span>ДОЛЯ ТРАФИКА</span><span>ДЕЙСТВИЕ</span></div>
-                  <div className="offer-list">{rows.map((row) => <div className={`offer-row ${row.removed ? "removed" : ""}`} key={row.id}><div className="offer-name"><span className="offer-avatar"><Target size={17} /></span><div><strong>{row.name}</strong><small>Оффер №{row.id}</small></div></div><div className="share-group">{row.removed ? <span className="removed-label">0% · Удалён</span> : <><div className="share-input"><input type="number" aria-label={`Доля оффера №${row.id}`} min="0" max="100" step="1" value={row.share} disabled={editorBusy} onChange={(e) => updateShare(row.id, e.target.value)} /><span>%</span></div><button className={`icon-btn ${row.locked ? "locked" : ""}`} title={row.locked ? "Открепить долю" : "Закрепить долю"} aria-label={row.locked ? `Открепить долю оффера №${row.id}` : `Закрепить долю оффера №${row.id}`} disabled={editorBusy} onClick={() => togglePin(row.id)}><LockKeyhole size={16} /></button></>}</div><div className="offer-action"><button className={`btn ${row.removed ? "outline restore" : "danger-ghost"} small`} disabled={editorBusy} onClick={() => toggleRemoved(row.id)}>{row.removed ? <><RotateCcw size={15} /> Вернуть</> : <><Trash2 size={15} /> Удалить</>}</button></div></div>)}</div>
+                  <div className="offer-list">{rows.map((row) => <div className={`offer-row ${row.removed ? "removed" : ""}`} key={row.id}><div className="offer-name"><span className="offer-avatar"><Target size={17} /></span><div><strong>{row.name}</strong><small>Оффер №{row.id}</small></div></div><div className="share-group">{row.removed ? <span className="removed-label">0% · Удалён</span> : <><div className="share-input"><input type="number" aria-label={`Доля оффера №${row.id}`} min="0" max="100" step="1" value={emptyShareIds.includes(row.id) ? "" : row.share} disabled={editorBusy} onChange={(e) => updateShare(row.id, e.target.value)} /><span>%</span></div><button className={`icon-btn ${row.locked ? "locked" : ""}`} title={row.locked ? "Открепить долю" : "Закрепить долю"} aria-label={row.locked ? `Открепить долю оффера №${row.id}` : `Закрепить долю оффера №${row.id}`} disabled={editorBusy} onClick={() => togglePin(row.id)}><LockKeyhole size={16} /></button></>}</div><div className="offer-action"><button className={`btn ${row.removed ? "outline restore" : "danger-ghost"} small`} disabled={editorBusy} onClick={() => toggleRemoved(row.id)}>{row.removed ? <><RotateCcw size={15} /> Вернуть</> : <><Trash2 size={15} /> Удалить</>}</button></div></div>)}</div>
                   <div className="add-section"><div className="add-heading"><Plus size={17} /><strong>Добавить оффер</strong></div><div className="add-grid"><div className="field-icon"><Search size={16} /><input aria-label="Поиск офферов для добавления" value={offerSearch} onChange={(e) => setOfferSearch(e.target.value)} placeholder="Поиск по названию или ID" disabled={editorBusy} /></div><div className="select-wrap"><select aria-label="Выбор оффера для добавления" value={addOfferId} disabled={editorBusy} onChange={(e) => setAddOfferId(e.target.value)}><option value="">Выберите оффер</option>{(filteredEditOffers.some((x) => String(x.id) === addOfferId) ? filteredEditOffers : [...filteredEditOffers, ...activeOffers.filter((x) => String(x.id) === addOfferId)]).map((item) => <option key={item.id} value={item.id}>{item.name} · #{item.id}</option>)}</select><ChevronDown size={16} className="select-chevron" /></div><button className="btn outline" onClick={addOffer} disabled={!addOfferId || editorBusy}><Plus size={17} /> Добавить</button></div></div>
-                  <div className="editor-footer"><div className={`total ${valid ? "" : "invalid"}`}><span>Всего распределено</span><strong>{sum}% <span>/ 100%</span></strong>{!valid && <small className="share-validation-message">Для сохранения сумма долей должна быть 100%. Снимите закрепление или измените проценты.</small>}</div><div className="editor-buttons"><button className="btn outline" disabled={!dirty || editorBusy} onClick={() => { setRows(resetEditor(baseline)); setNotice(null); }}><X size={16} /> Отменить</button><button className="btn primary" disabled={!dirty || !valid || editorBusy} onClick={() => void saveOffers()}><Save size={17} /> {editorBusy ? "Сохраняем…" : "Сохранить в Keitaro"}</button></div></div>
+                  <div className="editor-footer"><div className={`total ${valid ? "" : "invalid"}`}><span>Всего распределено</span><strong>{sum}% <span>/ 100%</span></strong>{!valid && <small className="share-validation-message">Для сохранения сумма долей должна быть 100%. Снимите закрепление или измените проценты.</small>}</div><div className="editor-buttons"><button className="btn outline" disabled={!dirty || editorBusy} onClick={() => { setRows(resetEditor(baseline)); setEmptyShareIds([]); setNotice(null); }}><X size={16} /> Отменить</button><button className="btn primary" disabled={!dirty || !valid || editorBusy} onClick={() => void saveOffers()}><Save size={17} /> {editorBusy ? "Сохраняем…" : "Сохранить в Keitaro"}</button></div></div>
                 </>}
               </section>
               <div className="right-stack"><section className="panel summary-panel"><span className="eyebrow">ОБЗОР ПОТОКА</span><h2>Распределение трафика</h2><p className="aside-lead">Проверьте распределение активных офферов перед сохранением.</p><div className="summary-stat"><span>Активных офферов</span><strong>{activeRows.length}</strong></div><div className="summary-stat"><span>Распределено трафика</span><strong className={valid ? "good" : "bad"}>{sum}%</strong></div><div className="summary-stat"><span>Несохранённые изменения</span><strong>{dirty ? "Да" : "Нет"}</strong></div><div className="share-bar" aria-label={`Распределено трафика: ${sum}%`}><span style={{ width: `${Math.min(sum, 100)}%` }} /></div><div className="summary-tip"><CircleAlert size={16} /><p>Изменения не отправляются в Keitaro до нажатия <strong>«Сохранить в Keitaro»</strong>. После сохранения поток загружается повторно для проверки.</p></div></section><div className="tip-card"><div className="tip-icon"><Check size={20} /></div><div><strong>Точные проценты</strong><p>Незакреплённые офферы делят оставшийся процент без ошибок округления.</p></div></div></div>

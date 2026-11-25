@@ -12,6 +12,17 @@ export interface OfferPayloadRow {
   state: "active";
 }
 
+/** Empty string is a temporary editing draft, never a valid saved percentage. */
+export function parseShareInput(text: string): number | null {
+  if (text === "") return null;
+  if (!/^\d+$/.test(text)) throw new Error("Доля должна быть целым числом от 0 до 100%.");
+  const value = Number(text);
+  if (!Number.isSafeInteger(value) || value > 100) {
+    throw new Error("Доля должна быть целым числом от 0 до 100%.");
+  }
+  return value;
+}
+
 export function changeShare(rows: OfferRow[], id: number, value: number): OfferRow[] {
   if (!Number.isInteger(value) || value < 0 || value > 100) {
     throw new Error("Доля должна быть целым числом от 0 до 100%.");
