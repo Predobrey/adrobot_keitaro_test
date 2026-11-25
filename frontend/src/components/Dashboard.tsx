@@ -9,11 +9,13 @@ import {
 } from "lucide-react";
 import { api, type Campaign, type CampaignPayload, type CreatedCampaign, type Meta, type MetaItem, type Stream } from "@/lib/api";
 import { offersSignature, sharesValid, type OfferRow } from "@/lib/distribution";
-import { appendOffer, buildOffersPayload, changeShare, parseShareInput, resetEditor, switchPin, switchRemoved } from "@/lib/editor";
+import { appendOffer, buildOffersPayload, changeShare, parseShareInput, readStoredPins, reconcileLoadedOffers, resetEditor, restoreSessionPins, switchPin, switchRemoved, writeStoredPins } from "@/lib/editor";
 
 type Page = "create" | "edit";
 type Notice = { kind: "success" | "error" | "info"; message: string };
 type Connection = "checking" | "ready" | "missing" | "error";
+
+const KEITARO_EMULATOR_ADMIN_URL = "https://keitaro-for-tests.etolegko.com/admin/";
 
 const blankForm = { name: "", geos: "", offerId: "", domainId: "", groupId: "", sourceId: "", offerSearch: "" };
 
@@ -64,6 +66,43 @@ export default function Dashboard() {
   const [offerSearch, setOfferSearch] = useState("");
   const [addOfferId, setAddOfferId] = useState("");
   const requestRef = useRef(0);
+  // Stream-scoped, in-memory history. It intentionally does not persist locally
+  // or create another source of truth beside Keitaro.
+  const knownRowsRef = useRef<Map<number, OfferRow[]>>(new Map());
+  // Editor-only preferences: kept in memory and mirrored to localStorage so
+  // pins survive F5/browser restarts without changing Keitaro or SQLite.
+  const pinnedByStreamRef = useRef<Map<number, Set<number>>>(new Map());
+
+  function storedPinsForStream(id: number): Set<number> {
+    const inMemory = pinnedByStreamRef.current.get(id);
+    if (inMemory) return inMemory;
+    try {
+      return readStoredPins(window.localStorage, id);
+    } catch {
+      return new Set<number>();
+    }
+  }
+  function rememberPinsForStream(id: number, nextRows: OfferRow[]) {
+    if (!Number.isSafeInteger(id) || id <= 0) return;
+    const pins = new Set(nextRows
+      .filter((row) => row.locked && !row.removed).map((row) => row.id));
+    pinnedByStreamRef.current.set(id, pins);
+    try {
+      writeStoredPins(window.localStorage, id, pins);
+    } catch {
+      // localStorage may be disabled; pins still work in the current tab.
+    }
+  }
+  function rememberCurrentPins(nextRows: OfferRow[]) {
+    if (streamId) rememberPinsForStream(Number(streamId), nextRows);
+  }
+  function discardEditorChanges() {
+    if (!dirty) return;
+    const restored = resetEditor(baseline);
+    rememberCurrentPins(restored);
+    setRows(restored);
+    setEmptyShareIds([]);
+  }
 
   const ready = connection === "ready";
   const dirty = offersSignature(rows) !== offersSignature(baseline) || emptyShareIds.length > 0;
@@ -110,7 +149,7 @@ export default function Dashboard() {
   }
   function navigate(next: Page) {
     if (next === page || !warnUnsaved()) return;
-    if (dirty) { setRows(resetEditor(baseline)); setEmptyShareIds([]); }
+    discardEditorChanges();
     setPage(next);
     setNotice(null);
   }
@@ -157,6 +196,7 @@ export default function Dashboard() {
 
   async function chooseCampaign(id: string) {
     if (!warnUnsaved()) return;
+    discardEditorChanges();
     const request = ++requestRef.current;
     setCampaignId(id);
     setStreamId("");
@@ -187,7 +227,17 @@ export default function Dashboard() {
     const value = await api<Stream>(`/streams/${id}`);
     if (request !== requestRef.current) return;
     if (value.schema !== "landings") throw new Error("Выбранный поток не поддерживает редактирование офферов.");
-    const incoming = setRowsFromStream(value, meta?.offers ?? []);
+    const incoming = restoreSessionPins(
+      reconcileLoadedOffers(
+        knownRowsRef.current.get(id) ?? [],
+        setRowsFromStream(value, meta?.offers ?? []),
+      ),
+      storedPinsForStream(id),
+    );
+    // A removed offer cannot keep a pin; Keitaro remains the source of truth
+    // for which offers are active and for all percentages.
+    rememberPinsForStream(id, incoming);
+    knownRowsRef.current.set(id, incoming.map((row) => ({ ...row })));
     setStreamId(String(id));
     setStream(value);
     setRows(incoming);
@@ -199,6 +249,7 @@ export default function Dashboard() {
 
   async function chooseStream(id: string) {
     if (!warnUnsaved()) return;
+    discardEditorChanges();
     const request = ++requestRef.current;
     setStreamId(id);
     setStream(null);
@@ -219,6 +270,8 @@ export default function Dashboard() {
 
   async function reloadStream() {
     if (!streamId || !warnUnsaved()) return;
+    // A confirmed refresh discards unsaved share edits, not saved server data.
+    if (dirty) rememberCurrentPins(baseline);
     const request = ++requestRef.current;
     setEditorBusy(true);
     setNotice(null);
@@ -239,7 +292,9 @@ export default function Dashboard() {
         // This draft cannot be saved until a valid percentage is entered.
         setEmptyShareIds((current) => current.includes(id) ? current : [...current, id]);
       } else {
-        setRows(changeShare(rows, id, value));
+        const next = changeShare(rows, id, value);
+        setRows(next);
+        rememberCurrentPins(next);
         setEmptyShareIds((current) => current.filter((item) => item !== id));
       }
       setNotice(null);
@@ -248,11 +303,15 @@ export default function Dashboard() {
     }
   }
   function togglePin(id: number) {
-    setRows((previous) => switchPin(previous, id));
+    const next = switchPin(rows, id);
+    setRows(next);
+    rememberCurrentPins(next);
   }
   function toggleRemoved(id: number) {
     try {
-      setRows(switchRemoved(rows, id));
+      const next = switchRemoved(rows, id);
+      setRows(next);
+      rememberCurrentPins(next);
       setEmptyShareIds((current) => current.filter((item) => item !== id));
       setNotice(null);
     } catch (error) {
@@ -267,7 +326,9 @@ export default function Dashboard() {
       return;
     }
     try {
-      setRows(appendOffer(rows, { id, name: item.name }));
+      const next = appendOffer(rows, { id, name: item.name });
+      setRows(next);
+      rememberCurrentPins(next);
       setAddOfferId("");
       setOfferSearch("");
       setNotice(null);
@@ -284,6 +345,9 @@ export default function Dashboard() {
     setNotice(null);
     try {
       await api(`/streams/${Number(streamId)}/offers`, { method: "PUT", body: JSON.stringify({ offers: payload }) });
+      // A successful PUT establishes the newly seen IDs, even if the follow-up
+      // GET temporarily fails. The API read-back will still override their status.
+      knownRowsRef.current.set(Number(streamId), rows.map((row) => ({ ...row })));
       await loadStream(Number(streamId), request);
       setNotice({ kind: "success", message: `Поток №${streamId} сохранён. Данные повторно проверены в Keitaro.` });
     } catch (error) {
@@ -319,7 +383,7 @@ export default function Dashboard() {
         <main className="main-content">
           <div className="page-heading">
             <div><span className="eyebrow"><span className="eyebrow-line" /> УПРАВЛЕНИЕ КАМПАНИЯМИ</span><h1>{page === "create" ? "Создание кампании" : "Распределение офферов"}<span className="heading-period">.</span></h1><p>{page === "create" ? "Создайте кампанию Keitaro и настройте перенаправления по странам." : "Добавляйте, удаляйте и распределяйте офферы в существующем потоке Keitaro."}</p></div>
-            <div className="version-chip"><Activity size={15} /> Keitaro Admin API</div>
+            <a className="version-chip keitaro-link" href={KEITARO_EMULATOR_ADMIN_URL} target="_blank" rel="noopener noreferrer" title="Открыть тестовый эмулятор Keitaro"><Activity size={15} /> Открыть Keitaro <ExternalLink size={14} /></a>
           </div>
 
           {notice && <div className={`notice ${notice.kind}`} role="alert"><span>{notice.kind === "success" ? <CheckCircle2 size={20} /> : <CircleAlert size={20} />}</span><p>{notice.message}</p><button aria-label="Закрыть уведомление" onClick={() => setNotice(null)}><X size={17} /></button></div>}
@@ -355,7 +419,7 @@ export default function Dashboard() {
                   <div className="offer-table-head"><span>ОФФЕР</span><span>ДОЛЯ ТРАФИКА</span><span>ДЕЙСТВИЕ</span></div>
                   <div className="offer-list">{rows.map((row) => <div className={`offer-row ${row.removed ? "removed" : ""}`} key={row.id}><div className="offer-name"><span className="offer-avatar"><Target size={17} /></span><div><strong>{row.name}</strong><small>Оффер №{row.id}</small></div></div><div className="share-group">{row.removed ? <span className="removed-label">0% · Удалён</span> : <><div className="share-input"><input type="number" aria-label={`Доля оффера №${row.id}`} min="0" max="100" step="1" value={emptyShareIds.includes(row.id) ? "" : row.share} disabled={editorBusy} onChange={(e) => updateShare(row.id, e.target.value)} /><span>%</span></div><button className={`icon-btn ${row.locked ? "locked" : ""}`} title={row.locked ? "Открепить долю" : "Закрепить долю"} aria-label={row.locked ? `Открепить долю оффера №${row.id}` : `Закрепить долю оффера №${row.id}`} disabled={editorBusy} onClick={() => togglePin(row.id)}><LockKeyhole size={16} /></button></>}</div><div className="offer-action"><button className={`btn ${row.removed ? "outline restore" : "danger-ghost"} small`} disabled={editorBusy} onClick={() => toggleRemoved(row.id)}>{row.removed ? <><RotateCcw size={15} /> Вернуть</> : <><Trash2 size={15} /> Удалить</>}</button></div></div>)}</div>
                   <div className="add-section"><div className="add-heading"><Plus size={17} /><strong>Добавить оффер</strong></div><div className="add-grid"><div className="field-icon"><Search size={16} /><input aria-label="Поиск офферов для добавления" value={offerSearch} onChange={(e) => setOfferSearch(e.target.value)} placeholder="Поиск по названию или ID" disabled={editorBusy} /></div><div className="select-wrap"><select aria-label="Выбор оффера для добавления" value={addOfferId} disabled={editorBusy} onChange={(e) => setAddOfferId(e.target.value)}><option value="">Выберите оффер</option>{(filteredEditOffers.some((x) => String(x.id) === addOfferId) ? filteredEditOffers : [...filteredEditOffers, ...activeOffers.filter((x) => String(x.id) === addOfferId)]).map((item) => <option key={item.id} value={item.id}>{item.name} · #{item.id}</option>)}</select><ChevronDown size={16} className="select-chevron" /></div><button className="btn outline" onClick={addOffer} disabled={!addOfferId || editorBusy}><Plus size={17} /> Добавить</button></div></div>
-                  <div className="editor-footer"><div className={`total ${valid ? "" : "invalid"}`}><span>Всего распределено</span><strong>{sum}% <span>/ 100%</span></strong>{!valid && <small className="share-validation-message">Для сохранения сумма долей должна быть 100%. Снимите закрепление или измените проценты.</small>}</div><div className="editor-buttons"><button className="btn outline" disabled={!dirty || editorBusy} onClick={() => { setRows(resetEditor(baseline)); setEmptyShareIds([]); setNotice(null); }}><X size={16} /> Отменить</button><button className="btn primary" disabled={!dirty || !valid || editorBusy} onClick={() => void saveOffers()}><Save size={17} /> {editorBusy ? "Сохраняем…" : "Сохранить в Keitaro"}</button></div></div>
+                  <div className="editor-footer"><div className={`total ${valid ? "" : "invalid"}`}><span>Всего распределено</span><strong>{sum}% <span>/ 100%</span></strong>{!valid && <small className="share-validation-message">Для сохранения сумма долей должна быть 100%. Снимите закрепление или измените проценты.</small>}</div><div className="editor-buttons"><button className="btn outline" disabled={!dirty || editorBusy} onClick={() => { discardEditorChanges(); setNotice(null); }}><X size={16} /> Отменить</button><button className="btn primary" disabled={!dirty || !valid || editorBusy} onClick={() => void saveOffers()}><Save size={17} /> {editorBusy ? "Сохраняем…" : "Сохранить в Keitaro"}</button></div></div>
                 </>}
               </section>
               <div className="right-stack"><section className="panel summary-panel"><span className="eyebrow">ОБЗОР ПОТОКА</span><h2>Распределение трафика</h2><p className="aside-lead">Проверьте распределение активных офферов перед сохранением.</p><div className="summary-stat"><span>Активных офферов</span><strong>{activeRows.length}</strong></div><div className="summary-stat"><span>Распределено трафика</span><strong className={valid ? "good" : "bad"}>{sum}%</strong></div><div className="summary-stat"><span>Несохранённые изменения</span><strong>{dirty ? "Да" : "Нет"}</strong></div><div className="share-bar" aria-label={`Распределено трафика: ${sum}%`}><span style={{ width: `${Math.min(sum, 100)}%` }} /></div><div className="summary-tip"><CircleAlert size={16} /><p>Изменения не отправляются в Keitaro до нажатия <strong>«Сохранить в Keitaro»</strong>. После сохранения поток загружается повторно для проверки.</p></div></section><div className="tip-card"><div className="tip-icon"><Check size={20} /></div><div><strong>Точные проценты</strong><p>Незакреплённые офферы делят оставшийся процент без ошибок округления.</p></div></div></div>

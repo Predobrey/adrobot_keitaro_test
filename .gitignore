@@ -18,3 +18,11 @@ frontend/out/
 frontend/*.tsbuildinfo
 frontend/.env.local
 frontend/.env
+
+# Local audit and development artifacts
+*.patch
+*.zip
+
+# Additional private environment variants (keep tracked examples)
+.env.*
+!.env.example

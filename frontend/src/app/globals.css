@@ -17,3 +17,15 @@
 @media(max-width:470px){.page-heading h1{font-size:31px}.form-actions{flex-direction:column;align-items:stretch}.form-actions>.btn{width:100%}.editor-footer{align-items:stretch;flex-direction:column}.editor-buttons{width:100%}.editor-buttons>.btn{flex:1}.offer-table-head,.offer-row{grid-template-columns:minmax(0,1fr) 113px;gap:10px}.offer-table-head>span:last-child{display:none}.offer-action{grid-column:1/-1;text-align:right}.offer-action .btn{width:100%;height:29px}.offer-row{padding:12px}.offer-name strong{font-size:11px}.add-grid{grid-template-columns:1fr}.add-grid>.field-icon{grid-column:auto}}
 
 .share-validation-message{display:block;margin-top:6px;max-width:270px;color:#ef9a9e;font-size:11px;line-height:1.45}
+
+/* Offer editor: matching heights and balanced fields at every viewport width. */
+.add-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr) 132px;gap:10px;align-items:stretch}
+.add-grid>.field-icon,.add-grid>.select-wrap{min-width:0;width:100%}
+.add-grid .field-icon input,.add-grid .select-wrap select,.add-grid>.btn{height:44px;min-height:44px;width:100%;margin:0}
+.add-grid .field-icon>svg{top:14px}
+.add-grid .select-wrap>.select-chevron{top:14px}
+.keitaro-link{display:inline-flex;gap:8px;align-items:center;white-space:nowrap;transition:border-color .15s,color .15s}
+.keitaro-link:hover{border-color:#66e0bf;color:#b8f7e3}
+@media(max-width:880px){.add-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.add-grid>.field-icon{grid-column:1/-1}.add-grid>.btn{grid-column:auto}}
+@media(max-width:510px){.add-grid{grid-template-columns:1fr}.add-grid>.field-icon{grid-column:auto}}
+@media(max-width:730px){.keitaro-link{display:inline-flex;font-size:10px;gap:5px;padding:7px 9px;max-width:100%}}
